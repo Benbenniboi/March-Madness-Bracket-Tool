@@ -1,6 +1,6 @@
 # March Madness Bracket Optimizer
 
-An expected-value maximizing bracket engine that combines **Monte Carlo simulation**, **machine learning win probabilities**, **game theory adjustments**, and **live data scraping** from Barttorvik and Vegas odds.
+An expected-value maximizing bracket engine that combines **Monte Carlo simulation**, **machine learning win probabilities**, **game theory adjustments**, **live data scraping** from Sports-Reference and Vegas odds, and **tempo-adjusted score predictions**.
 
 ---
 
@@ -43,8 +43,8 @@ Three contrarian adjustments shift expected value (EV) away from the public cons
 | Condition | Adjustment |
 |---|---|
 | 1-seed picked by > 40% of public | Win probability penalized −5% |
-| 2/3/4-seed picked by < 10% of public AND top-32 in AdjO + top-40 in AdjD | EV multiplied × 1.15 |
-| Championship pick not in KenPom top-25 AdjO **and** AdjD | Championship probability × 0.70 |
+| 2/3/4-seed picked by < 10% of public AND top-32 AdjO + top-40 AdjD | EV multiplied × 1.15 |
+| Championship pick not in top-25 both AdjO and AdjD | Championship probability × 0.70 |
 
 ### 4. Score Prediction
 
@@ -56,7 +56,7 @@ score_A      = AdjO_A × AdjD_B × possessions / 10,000
 score_B      = AdjO_B × AdjD_A × possessions / 10,000
 ```
 
-`AdjO` and `AdjD` are points per 100 possessions normalized to a national average of 100, so dividing by 10,000 converts to actual points. `AdjT` defaults to `68.5` (national average) if not provided.
+`AdjO` and `AdjD` are points per 100 possessions normalized to a national average of 100, so dividing by 10,000 converts to actual points. `AdjT` defaults to `68.5` (national average) if not provided; the scraper pulls real per-team tempo from Sports-Reference.
 
 ### 5. Monte Carlo Engine
 
@@ -81,10 +81,7 @@ If either is missing, the highest-probability upset candidate from the simulatio
 ## Installation
 
 ```bash
-# Clone / navigate to the project directory
 cd march-madness
-
-# Install dependencies
 pip install numpy pandas scikit-learn requests beautifulsoup4 lxml
 ```
 
@@ -101,11 +98,14 @@ python march_madness_optimizer.py --demo
 # Run with your own CSV
 python march_madness_optimizer.py --csv teams_2026_official_bracket.csv
 
-# Scrape live Barttorvik + ESPN bracket data automatically
-python march_madness_optimizer.py --scrape
+# Scrape live stats + use your bracket CSV for seeds/regions
+python march_madness_optimizer.py --scrape --year 2026 --bracket-csv teams_2026_official_bracket.csv
 
-# Scrape + include Vegas spreads and championship odds
-python march_madness_optimizer.py --scrape --odds-key YOUR_KEY
+# Same as above + Vegas spreads loaded automatically from .env
+python march_madness_optimizer.py --scrape --year 2026 --bracket-csv teams_2026_official_bracket.csv
+
+# Save the scraped data out to a CSV for reuse
+python march_madness_optimizer.py --scrape --year 2026 --bracket-csv teams_2026_official_bracket.csv --save-csv live_stats.csv
 
 # More simulations for higher accuracy
 python march_madness_optimizer.py --csv teams.csv --sims 50000
@@ -119,11 +119,11 @@ python march_madness_optimizer.py --csv teams.csv --sims 50000
 |---|---|---|
 | `--csv PATH` | — | Path to a 64-team CSV file |
 | `--demo` | — | Run with generated mock data |
-| `--scrape` | — | Scrape live data from Barttorvik + ESPN |
-| `--year YEAR` | `2025` | Season year for the scraper |
-| `--odds-key KEY` | *(from .env)* | The Odds API key for Vegas spreads |
-| `--save-csv PATH` | — | Save scraped data to a CSV after scraping |
-| `--last10` | off | Fetch per-team last-10 wins (slower, ~64 extra requests) |
+| `--scrape` | — | Scrape live efficiency stats from Sports-Reference |
+| `--year YEAR` | `2025` | Sports-Reference season year (2025 = 2024-25, 2026 = 2025-26) |
+| `--bracket-csv PATH` | — | CSV with `team/seed/region` columns to supply seeds and regions when the SR bracket page isn't posted yet |
+| `--save-csv PATH` | — | Save scraped team data to this CSV path |
+| `--odds-key KEY` | *(from .env)* | The Odds API key — auto-loaded from `.env` if present |
 | `--template` | — | Export a blank CSV template and exit |
 | `--sims N` | `10000` | Number of Monte Carlo simulations |
 | `--seed N` | `2024` | Random seed for reproducibility |
@@ -177,58 +177,83 @@ python march_madness_optimizer.py --template
 
 ## Live Data Scraping
 
-Running `--scrape` pulls from three sources automatically:
+Running `--scrape` pulls from three sources automatically.
 
-### Barttorvik (`barttorvik.com`)
+### Sports-Reference CBB (`sports-reference.com`)
 
-Fetches full-season T-Rank stats via the `getteams.php` JSON endpoint, including all Four Factors and tempo. No API key required.
+Scrapes two pages to get all Four Factors, offensive/defensive ratings, and tempo:
 
-### ESPN Bracket API
+- `/{year}-advanced-school-stats.html` — offensive stats, pace, win%
+- `/{year}-advanced-opponent-stats.html` — opponent (defensive) stats
 
-Pulls the current tournament bracket (seeds + regions) from ESPN's public API. Falls back to scraping the ESPN scoreboard across March dates if the bracket endpoint is unavailable.
+> **Note:** Barttorvik was the original source but now blocks all Python HTTP clients with a JavaScript browser challenge. Sports-Reference provides equivalent data and is reliably accessible.
+
+**Year convention:** SR uses the ending year of the season — `2025` = 2024-25 season, `2026` = 2025-26 season.
+
+### Tournament Bracket — Seeds & Regions
+
+The scraper tries two sources in order:
+
+1. **Sports-Reference bracket page** (`/cbb/postseason/men/{year}-ncaa.html`) — parses seeds and regions directly from the HTML bracket. This is the primary source and works once SR posts the bracket after Selection Sunday.
+2. **ESPN scoreboard fallback** — scans ESPN game data across March dates to extract seeds and regions from live game records.
+
+**Before the SR bracket page is posted** (before or shortly after Selection Sunday), use `--bracket-csv` to supply seeds and regions from your own CSV while still pulling fresh efficiency stats from SR:
+
+```bash
+python march_madness_optimizer.py --scrape --year 2026 --bracket-csv teams_2026_official_bracket.csv
+```
+
+The `--bracket-csv` file only needs `team`, `seed`, and `region` columns — but if it also contains stat columns (as the included CSVs do), those are used as a fallback for any team that SR can't match.
+
+**Team name matching:** SR names sometimes differ from bracket CSV names (e.g. `Connecticut` vs `UConn`, `Brigham Young` vs `BYU`). The scraper resolves these through a built-in alias table, fuzzy word-overlap matching, and a final fallback to the bracket CSV's own stats.
 
 ### The Odds API (`the-odds-api.com`)
 
-Fetches live Vegas moneylines, point spreads, and championship futures odds. Requires a free API key (500 requests/month on the free tier).
+Fetches two types of data with a single API key:
 
-- **Point spreads** are displayed inline in the bracket output next to each game
-- **Championship futures** implied probabilities are used as the `public_pick_pct` input
+| Data | Sport key used | How it's used |
+|---|---|---|
+| Live moneylines + point spreads | `basketball_ncaab` | Displayed inline next to each game in the bracket output |
+| Championship futures | `basketball_ncaab_championship_winner` | Implied win probabilities become each team's `public_pick_pct` input |
+
+Free tier: **500 requests/month**. Get a key at **https://the-odds-api.com**
 
 #### API Key Setup
 
-Create a `.env` file in the project directory so you never need to pass the key manually:
+Create a `.env` file in the project directory — the optimizer loads it automatically:
 
 ```
 odds-key = YOUR_API_KEY_HERE
 ```
 
-The optimizer reads this automatically. You can still override it per-run with `--odds-key`.
-
-Get a free key at **https://the-odds-api.com**
+You can still override it per-run with `--odds-key YOUR_KEY`. The CLI flag takes priority over `.env`.
 
 ---
 
 ## Output
 
 ```
-  ── Round of 64 (10 pts each) ─────────────────────────────────────────────
-    ( 1) Duke              vs (16) Siena            →  ( 1) Duke          ~96-67
-    ( 8) Ohio State        vs ( 9) TCU              →  ( 8) Ohio State    ~85-80
-    ( 5) St. John's        vs (12) Northern Iowa    →  ( 5) St. John's    ~81-71  [Vegas: -7.5]
+  ── Round of 64 (10 pts each) ──────────────────────────────────────────────────
+    ( 1) Duke              vs (16) Siena            →  ( 1) Duke           ~82-68  [Vegas: -29.5]
+    ( 8) Ohio State        vs ( 9) TCU              →  ( 8) Ohio State     ~83-82  [Vegas: -2.5]
+    ( 5) St. John's        vs (12) Northern Iowa    →  ( 5) St. John's     ~74-72
+    ( 4) Kansas            vs (13) Cal Baptist      →  (13) Cal Baptist   ⚡  ~74-74
     ...
 
   🏆  CHAMPION:  (1) Duke
-  📊  Bracket Expected Value: 1447.2 points
+  📊  Bracket Expected Value: 1399.0 points
 
-  ── Top 10 Championship Probabilities ──────────────────────────────────────
-    Duke                    31.1%  ███████████████████████████████
-    Michigan                28.4%  ████████████████████████████
-    Arizona                 21.8%  █████████████████████
+  ── Top 10 Championship Probabilities ──────────────────────────────────────────
+    Duke                    32.2%  ████████████████████████████████
+    Gonzaga                 20.8%  ████████████████████
+    High Point              13.4%  █████████████
 ```
 
-- `⚡` marks upset picks (winner has a higher seed number than the loser)
-- `~79-72` is the model's predicted final score
-- `[Vegas: -7.5]` is the point spread when odds data is available (negative = favorite)
+| Marker | Meaning |
+|---|---|
+| `⚡` | Upset pick — winner has a higher seed number than the loser |
+| `~82-68` | Model's tempo-adjusted predicted final score |
+| `[Vegas: -7.5]` | Point spread (negative = that team is favored); only shown when odds data is available |
 
 ---
 
@@ -251,19 +276,20 @@ Default ESPN Tournament Challenge scoring:
 
 | File | Description |
 |---|---|
-| `march_madness_optimizer.py` | Main optimizer — ML model, Monte Carlo engine, bracket output |
-| `scraper.py` | Live data scrapers for Barttorvik, ESPN, and The Odds API |
-| `teams_2026_official_bracket.csv` | 2026 tournament field with full Four Factors data |
-| `teams_2026_final.csv` | Alternate 2026 team dataset |
-| `.env` | Local secrets (odds API key) — not committed to version control |
+| `march_madness_optimizer.py` | Main optimizer — ML model, Monte Carlo engine, score predictions, bracket output |
+| `scraper.py` | Live data scrapers — Sports-Reference stats, SR/ESPN bracket, The Odds API |
+| `teams_2026_official_bracket.csv` | 2025-26 tournament field with full Four Factors data |
+| `teams_2026_final.csv` | Alternate 2025-26 team dataset |
+| `.env` | Local secrets (odds API key) — do not commit to version control |
 
 ---
 
 ## Data Sources
 
-| Source | Data | URL |
+| Source | Data provided | Notes |
 |---|---|---|
-| Barttorvik T-Rank | Adjusted efficiency, Four Factors, tempo | barttorvik.com |
-| ESPN | Tournament bracket, seeds, regions | site.api.espn.com |
-| The Odds API | Vegas moneylines, spreads, futures | the-odds-api.com |
-| KenPom (manual) | Can be used to fill CSV columns | kenpom.com |
+| Sports-Reference CBB | Offensive/defensive ratings, Four Factors, tempo, win% | Primary stats source; no API key needed |
+| Sports-Reference bracket page | Tournament seeds and regions | Available after Selection Sunday |
+| ESPN scoreboard API | Tournament seeds and regions (fallback) | Used when SR bracket page isn't posted yet |
+| The Odds API | Vegas moneylines, spreads, championship futures | Free tier: 500 req/month |
+| Your bracket CSV (`--bracket-csv`) | Seeds and regions override | Use before SR bracket page is live; stat columns used as fallback for unmatched teams |
