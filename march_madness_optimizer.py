@@ -5,11 +5,10 @@
   Expected-Value Maximization via Monte Carlo + Game Theory
 ==============================================================================
 
-  Author : Claude (Anthropic) — commissioned build
   Usage  : python march_madness_optimizer.py --csv teams.csv
            python march_madness_optimizer.py --csv teams.csv --sims 50000
            python march_madness_optimizer.py --demo          # run with mock data
-           python march_madness_optimizer.py --scrape        # live Barttorvik + Vegas
+           python march_madness_optimizer.py --scrape        # live Sports-Reference + Vegas
            python march_madness_optimizer.py --scrape --odds-key YOUR_KEY
 
   See --help for all options.
@@ -20,7 +19,7 @@ import argparse
 import os
 import sys
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -393,7 +392,7 @@ class MatchupModel:
 def apply_game_theory_adjustment(
     prob: float,
     team: Team,
-    round_idx: int,
+    _round_idx: int,
     is_championship: bool = False,
 ) -> Tuple[float, float]:
     """
@@ -497,7 +496,7 @@ def simulate_tournament_once(
 
 def enforce_upset_quota(
     bracket: List[Team],
-    model: MatchupModel,
+    _model: "MatchupModel",
     sim_results: np.ndarray,
     n_sims: int,
 ) -> None:
@@ -654,11 +653,11 @@ def run_monte_carlo(
 
 
 def _build_consistent_bracket(
-    bracket: List[Team],
+    _bracket: List[Team],
     game_winner_ev: Dict,
-    game_winner_cnt: Dict,
-    n_sims: int,
-    scoring: Dict,
+    _game_winner_cnt: Dict,
+    _n_sims: int,
+    _scoring: Dict,
 ) -> List[int]:
     """
     Build a 63-game bracket that is internally consistent.
@@ -1008,16 +1007,19 @@ CSV FORMAT (14 required + 1 optional column):
     )
     parser.add_argument("--csv",      type=str, help="Path to your 64-team CSV file")
     parser.add_argument("--demo",     action="store_true", help="Run with mock data")
-    parser.add_argument("--scrape",   action="store_true",
-                        help="Scrape live data from Barttorvik + ESPN bracket")
-    parser.add_argument("--year",     type=int, default=2025,
-                        help="Season year for scraper (default: 2025)")
-    parser.add_argument("--odds-key", type=str, default="",
+    parser.add_argument("--scrape",       action="store_true",
+                        help="Scrape live stats from Sports-Reference + Vegas odds")
+    parser.add_argument("--year",         type=int, default=2025,
+                        help="SR season year (2025=2024-25, 2026=2025-26; default: 2025)")
+    parser.add_argument("--bracket-csv",  type=str, default="",
+                        help="CSV with team/seed/region columns to use as bracket source "
+                             "(required when the SR bracket page isn't posted yet)")
+    parser.add_argument("--odds-key",     type=str, default="",
                         help="The Odds API key for Vegas spreads (free at the-odds-api.com)")
-    parser.add_argument("--save-csv", type=str, default="",
+    parser.add_argument("--save-csv",     type=str, default="",
                         help="Save scraped team data to this CSV path")
-    parser.add_argument("--last10",   action="store_true",
-                        help="When scraping: fetch per-team last-10 wins (slower)")
+    parser.add_argument("--last10",       action="store_true",
+                        help="(unused — kept for compatibility)")
     parser.add_argument("--template", action="store_true", help="Export blank CSV template")
     parser.add_argument("--sims",     type=int, default=10000,
                         help="Monte Carlo simulations (default: 10000)")
@@ -1050,11 +1052,18 @@ CSV FORMAT (14 required + 1 optional column):
         if odds_key:
             print(f"  🔑  Odds API key loaded {'from --odds-key' if args.odds_key else 'from .env'}")
 
+        # Optional bracket override from --bracket-csv
+        bracket_df = None
+        if args.bracket_csv:
+            print(f"  📋  Loading bracket seeds/regions from: {args.bracket_csv}")
+            bracket_df = pd.read_csv(args.bracket_csv)
+            bracket_df.columns = bracket_df.columns.str.strip().str.lower()
+
         print(f"\n🌐  Scraping live data for {args.year} season...")
         scraped_df = build_tournament_dataframe(
             year=args.year,
             odds_api_key=odds_key,
-            fetch_last10=args.last10,
+            bracket_df=bracket_df,
         )
 
         if scraped_df.empty:
